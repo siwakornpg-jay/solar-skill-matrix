@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#17181c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Solar Skill Matrix</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: { base:'#17181c', panel:'#1f2025', card:'#26272d', line:'#2f3138', brand:'#fbbf24', skill:'#86efac', target:'#3f6b4a', muted:'#9ca3af' },
+    fontFamily: { sans: ['Prompt', 'sans-serif'] }
+  } }
+};
+</script>
+<style type="text/tailwindcss">
+@layer base { body { @apply bg-base text-gray-100 antialiased; } }
+@layer components {
+  .panel { @apply rounded-2xl border border-line bg-panel; }
+  .card { @apply rounded-xl border border-line bg-card; }
+  .chip { @apply inline-flex items-center rounded-full border border-line bg-[#2b2d33] px-3 py-0.5 text-xs text-sky-300; }
+  .chip-green { @apply inline-flex items-center rounded-full border border-green-500/30 bg-green-500/10 px-3 py-0.5 text-xs text-green-300; }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition disabled:opacity-50; }
+  .btn-primary { @apply bg-brand text-black hover:bg-amber-300; }
+  .btn-ghost { @apply border border-sky-400/40 text-sky-300 hover:bg-sky-400/10; }
+  .btn-danger { @apply border border-red-500/40 text-red-300 hover:bg-red-500/10; }
+  .input { @apply w-full rounded-lg border border-line bg-base px-3 py-2 text-sm text-gray-100 outline-none transition focus:border-brand; }
+  .label { @apply mb-1 block text-xs text-muted; }
+  .tab { @apply whitespace-nowrap border-b-2 border-transparent px-2 pb-1.5 text-xs text-muted transition hover:text-white; }
+  .tab-active { @apply border-sky-400 text-white; }
+}
+input[type=date] { color-scheme: dark; }
+option { background: #17181c; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body class="font-sans">
+
+<div class="min-h-screen md:pl-16">
+  <aside class="fixed inset-y-0 left-0 z-40 hidden w-16 flex-col items-center gap-2 border-r border-line bg-panel py-4 md:flex">
+    <a href="#/" class="mb-6 grid h-10 w-10 place-items-center rounded-full border-2 border-brand text-brand"><i data-lucide="sun" class="h-5 w-5"></i></a>
+    <div id="sideNav" class="flex flex-col gap-2"></div>
+  </aside>
+  <main id="app" class="pb-24 md:pb-6"></main>
+  <nav id="bottomNav" class="fixed inset-x-0 bottom-0 z-40 flex border-t border-line bg-panel/95 backdrop-blur md:hidden"></nav>
+</div>
+<div id="toast" class="hidden"></div>
+
+<script>
+// ======================= ⚙️ CONFIG =======================
+// เว้นว่างไว้ = โหมดสาธิต (เก็บข้อมูลในเบราว์เซอร์)
+// ใส่ค่าจาก Supabase → Project Settings → API เพื่อเก็บข้อมูลบนคลาวด์
+const SUPABASE_URL = '';
+const SUPABASE_ANON_KEY = '';
+// =========================================================
+
+const USE_SB = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+const sb = USE_SB ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+/* ---------- Helpers ---------- */
+const $ = s => document.querySelector(s);
+const app = $('#app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2));
+const today = () => new Date().toISOString().slice(0, 10);
+const thDate = d => new Date(d).toLocaleDateString('th-TH', { dateStyle: 'medium' });
+const thDT = d => new Date(d).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' });
+const sortDesc = a => a.sort((x, y) => (y.created_at || '').localeCompare(x.created_at || ''));
+const rand = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const icons = () => window.lucide && lucide.createIcons();
+const loading = () => `<div class="p-8 text-muted">กำลังโหลด...</div>`;
+const safe = fn => async (...a) => { try { return await fn(...a); } catch (e) { console.error(e); toast('เกิดข้อผิดพลาด: ' + (e.message || e), true); } };
+
+function toast(msg, err) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = `fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-lg px-4 py-2 text-sm text-white shadow-lg ${err ? 'bg-red-600' : 'bg-green-600'}`;
+  clearTimeout(t._h); t._h = setTimeout(() => (t.className = 'hidden'), 2800);
+}
+
+function avatar(src, name, size = 48) {
+  const st = `width:${size}px;height:${size}px`;
+  return src
+    ? `<img src="${esc(src)}" alt="" style="${st}" class="shrink-0 rounded-full object-cover ring-2 ring-brand/50">`
+    : `<div style="${st};font-size:${Math.round(size / 2.5)}px" class="grid shrink-0 place-items-center rounded-full bg-brand/20 font-semibold text-brand">${esc((name || '?').slice(0, 1))}</div>`;
+}
+
+const modeBadge = () => USE_SB
+  ? `<span class="chip-green">● เชื่อมต่อ Supabase</span>`
+  : `<span class="chip !text-amber-300">โหมดสาธิต: ข้อมูลเก็บในเบราว์เซอร์นี้</span>`;
+
+/* ---------- Data layer (Supabase หรือ localStorage) ---------- */
+const LS_KEY = 'solar_skill_matrix_v1';
+const local = {
+  load() { try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch { return {}; } },
+  save(d) { try { localStorage.setItem(LS_KEY, JSON.stringify(d)); } catch { throw new Error('พื้นที่เก็บข้อมูลในเบราว์เซอร์เต็ม'); } }
+};
+const isMatch = (r, m) => Object.entries(m).every(([k, v]) => r[k] === v);
+
+const DB = {
+  async all(t, m = {}) {
+    if (USE_SB) {
+      let out = [], from = 0;
+      while (true) {
+        const { data, error } = await sb.from(t).select('*').match(m).range(from, from + 999);
+        if (error) throw error;
+        out = out.concat(data);
+        if (data.length < 1000) break;
+        from += 1000;
+      }
+      return out;
+    }
+    return (local.load()[t] || []).filter(r => isMatch(r, m));
+  },
+  async insert(t, rows) {
+    rows = Array.isArray(rows) ? rows : [rows];
+    if (!rows.length) return [];
+    if (USE_SB) {
+      const { data, error } = await sb.from(t).insert(rows).select();
+      if (error) throw error; return data;
+    }
+    const d = local.load(), now = new Date().toISOString();
+    const out = rows.map(r => ({ id: uid(), created_at: now, ...r }));
+    d[t] = [...(d[t] || []), ...out]; local.save(d); return out;
+  },
+  async update(t, m, patch) {
+    if (USE_SB) { const { error } = await sb.from(t).update(patch).match(m); if (error) throw error; return; }
+    const d = local.load(); d[t] = (d[t] || []).map(r => (isMatch(r, m) ? { ...r, ...patch } : r)); local.save(d);
+  },
+  async del(t, m) {
+    if (USE_SB) { const { error } = await sb.from(t).delete().match(m); if (error) throw error; return; }
+    const d = local.load(); d[t] = (d[t] || []).filter(r => !isMatch(r, m)); local.save(d);
+  },
+  async upsertES(rows) {
+    if (USE_SB) { const { error } = await sb.from('employee_skills').upsert(rows, { onConflict: 'employee_id,skill_id' }); if (error) throw error; return; }
+    const d = local.load(); d.employee_skills = d.employee_skills || [];
+    rows.forEach(r => {
+      const i = d.employee_skills.findIndex(x => x.employee_id === r.employee_id && x.skill_id === r.skill_id);
+      if (i >= 0) d.employee_skills[i] = { ...d.employee_skills[i], ...r }; else d.employee_skills.push(r);
+    });
+    local.save(d);
+  }
+};
+
+async function deleteEmployees(ids) {
+  for (const id of ids) {
+    for (const t of ['employee_skills', 'tasks', 'activities']) await DB.del(t, { employee_id: id });
+    await DB.del('employees', { id });
+  }
+}
+async function getSkills(activeOnly = true) {
+  let s = await DB.all('skills');
+  if (activeOnly) s = s.filter(x => x.is_active !== false);
+  return s.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+}
+const logAct = (employee_id, action, actor = 'Admin') => DB.insert('activities', { employee_id, actor, action });
+
+/* ---------- Constants ---------- */
+const LEVELS = [
+  { v: 0, code: '-', label: 'ยังไม่มีทักษะ' },
+  { v: 1, code: 'L1', label: 'ฝึกหัด / เรียนรู้' },
+  { v: 2, code: 'L2', label: 'ทำได้เมื่อมีผู้ควบคุม' },
+  { v: 3, code: 'L3', label: 'ทำได้ด้วยตนเอง' },
+  { v: 4, code: 'L4', label: 'ชำนาญ แก้ปัญหาได้' },
+  { v: 5, code: 'L5', label: 'ผู้เชี่ยวชาญ สอนผู้อื่นได้' }
+];
+const CAT = { hard: 'ทักษะเทคนิค', safety: 'ความปลอดภัย', soft: 'Soft skills' };
+const CAREER = ['ผู้ช่วยช่างโซล่าเซลล์', 'ช่างเทคนิคโซล่าเซลล์', 'ช่างเทคนิคอาวุโส', 'หัวหน้าทีมช่าง', 'ผู้จัดการงานติดตั้ง'];
+const nextPos = p => { const i = CAREER.indexOf(p); return i >= 0 && i < CAREER.length - 1 ? CAREER[i + 1] : p; };
+const LEVEL_CELL = ['bg-zinc-800 text-zinc-500', 'bg-red-500/25 text-red-300', 'bg-orange-500/25 text-orange-300', 'bg-yellow-400/25 text-yellow-200', 'bg-lime-400/25 text-lime-200', 'bg-green-400/30 text-green-200'];
+const STATUS = {
+  todo: { label: 'To do', text: 'text-sky-400', dot: 'bg-sky-400' },
+  progress: { label: 'กำลังทำ', text: 'text-yellow-300', dot: 'bg-yellow-300' },
+  done: { label: 'เสร็จแล้ว', text: 'text-green-400', dot: 'bg-green-400' }
+};
+const ST_ORDER = ['todo', 'progress', 'done'];
+
+const DEFAULT_SKILLS = [
+  { name: 'ความปลอดภัยในการทำงานบนที่สูง', short_name: 'Work at Height', category: 'safety', description: 'ใช้ Full body harness, Lifeline, นั่งร้าน', sort_order: 1 },
+  { name: 'ความปลอดภัยทางไฟฟ้าและ LOTO', short_name: 'Electrical Safety', category: 'safety', description: 'Lockout/Tagout, Arc flash, การตัดวงจร DC', sort_order: 2 },
+  { name: 'การใช้ PPE และเครื่องมือ', short_name: 'PPE & Tools', category: 'safety', description: 'เลือกใช้ PPE และเครื่องมือวัดอย่างถูกต้อง', sort_order: 3 },
+  { name: 'การติดตั้งโครงสร้างและแผง PV', short_name: 'PV Mounting', category: 'hard', description: 'Rail, Clamp, การยึดหลังคาเมทัลชีท/กระเบื้อง', sort_order: 4 },
+  { name: 'การเดินสาย DC และเข้าหัว MC4', short_name: 'DC Wiring', category: 'hard', description: 'String design, การย้ำหัว MC4, Polarity', sort_order: 5 },
+  { name: 'การติดตั้งและตั้งค่า Inverter', short_name: 'Inverter', category: 'hard', description: 'On-grid / Hybrid, ตั้งค่า Grid code, Zero export', sort_order: 6 },
+  { name: 'ตู้ควบคุม AC และอุปกรณ์ป้องกัน', short_name: 'AC & Protection', category: 'hard', description: 'Breaker, SPD, Fuse, RCD', sort_order: 7 },
+  { name: 'ระบบกราวด์และป้องกันฟ้าผ่า', short_name: 'Grounding', category: 'hard', description: 'วัดค่าความต้านทานดิน, Equipotential bonding', sort_order: 8 },
+  { name: 'การทดสอบและ Commissioning', short_name: 'Commissioning', category: 'hard', description: 'IV Curve, Insulation test, Voc/Isc', sort_order: 9 },
+  { name: 'การวิเคราะห์และแก้ไขปัญหา', short_name: 'Troubleshooting', category: 'hard', description: 'Error code inverter, Hot spot, String fault', sort_order: 10 },
+  { name: 'การบำรุงรักษาและล้างแผง (O&M)', short_name: 'O&M', category: 'hard', description: 'PM checklist, Thermal scan, ล้างแผง', sort_order: 11 },
+  { name: 'ระบบแบตเตอรี่กักเก็บพลังงาน', short_name: 'BESS', category: 'hard', description: 'Lithium battery, BMS, Hybrid system', sort_order: 12 },
+  { name: 'การอ่านแบบ Single Line Diagram', short_name: 'SLD Reading', category: 'hard', description: 'อ่านแบบไฟฟ้าและแบบติดตั้ง', sort_order: 13 },
+  { name: 'ระบบ Monitoring / Data Logger', short_name: 'Monitoring', category: 'hard', description: 'ตั้งค่า WiFi dongle, Portal, Alarm', sort_order: 14 },
+  { name: 'การสื่อสารและบริการลูกค้า', short_name: 'Communication', category: 'soft', description: 'อธิบายระบบและส่งมอบงานให้ลูกค้า', sort_order: 15 },
+  { name: 'การทำงานเป็นทีม', short_name: 'Teamwork', category: 'soft', description: 'ประสานงานภายในทีมและผู้รับเหมา', sort_order: 16 },
+  { name: 'ภาวะผู้นำและการสอนงาน', short_name: 'Leadership', category: 'soft', description: 'ควบคุมหน้างานและสอนช่างใหม่', sort_order: 17 },
+  { name: 'การจัดทำรายงานหน้างาน', short_name: 'Reporting', category: 'soft', description: 'รายงานประจำวัน, ภาพถ่ายก่อน/หลัง', sort_order: 18 }
+];
+
+/* ---------- Mock data ---------- */
+const FIRST_M = ['สมชาย', 'วิชัย', 'ณัฐพล', 'ธนากร', 'กิตติพงษ์', 'อนุชา', 'ปิยะพงษ์', 'สุริยา', 'ศักดิ์ชัย', 'จักรพันธ์', 'พงศกร', 'ธีรวัฒน์', 'อรรถพล', 'ชยพล', 'วรวุฒิ'];
+const FIRST_F = ['สุนิสา', 'กมลชนก', 'ปวีณา', 'ศิริพร', 'วรรณา'];
+const LAST = ['ใจดี', 'แสงทอง', 'สุขสวัสดิ์', 'ศรีสุข', 'พลังงาม', 'รุ่งเรือง', 'ทองคำ', 'บุญมา', 'แก้วมณี', 'อินทร์แก้ว', 'ชัยมงคล', 'วงศ์ใหญ่'];
+const NICK = ['ต้น', 'เอ็ม', 'บอส', 'เก่ง', 'ปอนด์', 'ตั้ม', 'โอ๊ต', 'บีม', 'นัท', 'แบงค์', 'ฟิล์ม', 'เจ'];
+const TEAMS = ['ทีมติดตั้ง Rooftop', 'ทีม Solar Farm', 'ทีม O&M', 'ทีม BESS & Hybrid'];
+const LEADS = ['สมศักดิ์ วงศ์ทอง', 'ประเสริฐ แสงอรุณ', 'วีระพงษ์ มั่นคง', 'อำนาจ ศรีวิไล'];
+const TASK_TPL = [
+  { title: 'ติดตั้งระบบ Rooftop 10 kWp', description: 'ติดตั้งแผงและ Inverter บ้านลูกค้า จ.นนทบุรี', tags: ['PV Mounting', 'Inverter'] },
+  { title: 'Commissioning โรงงาน 500 kWp', description: 'ทดสอบ IV Curve และ Insulation ทุก String', tags: ['Commissioning'] },
+  { title: 'PM ประจำไตรมาส Solar Farm', description: 'ล้างแผง ตรวจ Thermal scan และขันจุดต่อ', tags: ['O&M'] },
+  { title: 'แก้ไข Inverter Error: Isolation fault', description: 'ไล่ตรวจ String ที่ค่าความเป็นฉนวนต่ำ', tags: ['Troubleshooting'] },
+  { title: 'ติดตั้ง Hybrid + Battery 10 kWh', description: 'ติดตั้ง BESS และตั้งค่า BMS', tags: ['BESS', 'Inverter'] },
+  { title: 'อบรม Work at Height', description: 'อบรมทบทวนความปลอดภัยการทำงานบนที่สูง', tags: ['Safety'] }
+];
+
+async function restoreDefaultSkills() {
+  const names = new Set((await DB.all('skills')).map(s => s.name));
+  const add = DEFAULT_SKILLS.filter(s => !names.has(s.name)).map(s => ({ ...s, is_active: true }));
+  await DB.insert('skills', add);
+  return (await getSkills()).length;
+}
+
+async function generateMockData(count) {
+  let skills = await getSkills();
+  if (!skills.length) { await restoreDefaultSkills(); skills = await getSkills(); }
+  const stamp = Date.now().toString().slice(-5);
+  const rows = Array.from({ length: count }, (_, i) => {
+    const female = Math.random() < 0.2;
+    const lvl = pick([0, 1, 1, 1, 2, 2, 3, 4]);
+    const start = new Date(); start.setMonth(start.getMonth() - rand(3, 12 * (lvl + 1)));
+    return {
+      employee_code: `SLR-${stamp}-${String(i + 1).padStart(2, '0')}`,
+      first_name: female ? pick(FIRST_F) : pick(FIRST_M), last_name: pick(LAST), nickname: pick(NICK),
+      position: CAREER[lvl], team: pick(TEAMS), team_lead: pick(LEADS),
+      phone: `08${rand(1, 9)}-${rand(100, 999)}-${rand(1000, 9999)}`,
+      email: `tech${stamp}${i + 1}@solar-demo.co.th`,
+      start_date: start.toISOString().slice(0, 10),
+      photo_url: `https://randomuser.me/api/portraits/${female ? 'women' : 'men'}/${rand(1, 90)}.jpg`,
+      is_mock: true
+    };
+  });
+  const emps = await DB.insert('employees', rows);
+  const es = [], tasks = [], acts = [];
+  for (const e of emps) {
+    const s = CAREER.indexOf(e.position);
+    for (const sk of skills) {
+      let base = 1 + s + rand(-1, 1);
+      if (sk.category === 'soft' && s >= 3) base += 1;
+      if (sk.short_name === 'BESS' && e.team !== 'ทีม BESS & Hybrid') base -= 1;
+      const cur = clamp(base, 0, 5), tgt = clamp(cur + rand(0, 2), cur, 5);
+      es.push({ employee_id: e.id, skill_id: sk.id, current_level: cur, target_level: tgt, certified: cur >= 3 && Math.random() > 0.4 });
+    }
+    [...TASK_TPL].sort(() => Math.random() - 0.5).slice(0, rand(2, 4))
+      .forEach(t => tasks.push({ ...t, employee_id: e.id, status: pick(ST_ORDER), due_date: today() }));
+    acts.push(
+      { employee_id: e.id, actor: 'System', action: `เพิ่มพนักงานใหม่ ${e.first_name} ${e.last_name} (Mock)` },
+      { employee_id: e.id, actor: e.team_lead, action: 'ประเมินทักษะประจำไตรมาสเรียบร้อย' }
+    );
+  }
+  await DB.insert('employee_skills', es);
+  await DB.insert('tasks', tasks);
+  await DB.insert('activities', acts);
+  return emps.length;
+}
+
+async function clearMockData() {
+  const m = await DB.all('employees', { is_mock: true });
+  await deleteEmployees(m.map(e => e.id));
+  return m.length;
+}
+
+/* ---------- Navigation ---------- */
+const NAV = [['/', 'users', 'พนักงาน'], ['/matrix', 'layout-grid', 'Matrix'], ['/skills', 'wrench', 'ทักษะ'], ['/mock', 'flask-conical', 'Mock']];
+function renderNav(path) {
+  const act = h => (h === '/' ? path === '/' || path.startsWith('/emp') : path.startsWith(h));
+  $('#sideNav').innerHTML = NAV.map(([h, ic, l]) => `<a href="#${h}" title="${l}" class="grid h-11 w-11 place-items-center rounded-xl transition ${act(h) ? 'bg-brand/15 text-brand ring-1 ring-brand/40' : 'text-muted hover:bg-white/5 hover:text-white'}"><i data-lucide="${ic}" class="h-5 w-5"></i></a>`).join('');
+  $('#bottomNav').innerHTML = NAV.map(([h, ic, l]) => `<a href="#${h}" class="flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] ${act(h) ? 'text-brand' : 'text-muted'}"><i data-lucide="${ic}" class="h-5 w-5"></i>${l}</a>`).join('');
+}
+
+async function router() {
+  const path = location.hash.slice(1) || '/';
+  const p = path.split('/').filter(Boolean);
+  renderNav(path);
+  window.scrollTo(0, 0);
+  try {
+    if (!p.length) await viewHome();
+    else if (p[0] === 'emp' && p[1] === 'new') await viewForm();
+    else if (p[0] === 'emp' && p[2] === 'edit') await viewForm(p[1]);
+    else if (p[0] === 'emp') await viewEmployee(p[1]);
+    else if (p[0] === 'matrix') await viewMatrix();
+    else if (p[0] === 'skills') await viewSkills();
+    else if (p[0] === 'mock') viewMock();
+    else location.hash = '#/';
+  } catch (e) {
+    console.error(e);
+    app.innerHTML = `<div class="mx-auto max-w-2xl p-6"><div class="panel p-6"><h2 class="mb-2 text-lg font-semibold text-red-300">เกิดข้อผิดพลาด</h2><p class="text-sm text-muted">${esc(e.message || e)}</p></div></div>`;
+  }
+  icons();
+}
+
+/* ================= หน้า: รายชื่อพนักงาน ================= */
+const H = { emps: [], stats: {}, q: '', team: 'all' };
+async function viewHome() {
+  app.innerHTML = loading();
+  const [emps, es] = await Promise.all([DB.all('employees'), DB.all('employee_skills')]);
+  const acc = {};
+  es.forEach(r => {
+    const a = (acc[r.employee_id] ??= { sum: 0, n: 0, gap: 0, cert: 0 });
+    a.sum += r.current_level; a.n++;
+    if (r.current_level < r.target_level) a.gap++;
+    if (r.certified) a.cert++;
+  });
+  H.emps = sortDesc(emps);
+  H.stats = Object.fromEntries(Object.entries(acc).map(([k, a]) => [k, { avg: a.n ? a.sum / a.n : 0, gap: a.gap, cert: a.cert }]));
+  const all = Object.values(H.stats);
+  const teams = [...new Set(emps.map(e => e.team).filter(Boolean))];
+  const kpis = [
+    ['users', 'พนักงานทั้งหมด', emps.length],
+    ['gauge', 'ระดับทักษะเฉลี่ย', all.length ? (all.reduce((s, x) => s + x.avg, 0) / all.length).toFixed(2) : '-'],
+    ['target', 'ทักษะที่ยังไม่ถึงเป้า', all.reduce((s, x) => s + x.gap, 0)],
+    ['badge-check', 'ทักษะที่มีใบรับรอง', all.reduce((s, x) => s + x.cert, 0)]
+  ];
+  app.innerHTML = `
+  <div class="mx-auto max-w-[1600px] p-4 md:p-6">
+    <header class="mb-6 flex flex-wrap items-center justify-between gap-3">
+      <div><p class="text-xs text-muted">Solar Technician Skill Matrix</p><h1 class="text-2xl font-semibold md:text-3xl">ทีมช่างเทคนิค</h1><div class="mt-2">${modeBadge()}</div></div>
+      <a href="#/emp/new" class="btn btn-primary"><i data-lucide="plus" class="h-4 w-4"></i>เพิ่มพนักงาน</a>
+    </header>
+    <div class="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      ${kpis.map(([ic, l, v]) => `<div class="panel flex items-center gap-3 p-4"><div class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand"><i data-lucide="${ic}" class="h-5 w-5"></i></div><div><p class="text-xs text-muted">${l}</p><p class="text-xl font-semibold">${v}</p></div></div>`).join('')}
+    </div>
+    <div class="mb-4 flex flex-col gap-3 sm:flex-row">
+      <div class="relative flex-1"><i data-lucide="search" class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"></i>
+        <input class="input pl-9" placeholder="ค้นหาชื่อ, รหัส, ตำแหน่ง..." value="${esc(H.q)}" oninput="H.q=this.value;drawHomeGrid()"></div>
+      <select class="input sm:w-60" onchange="H.team=this.value;drawHomeGrid()">
+        <option value="all">ทุกทีม</option>${teams.map(t => `<option ${H.team === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}
+      </select>
+    </div>
+    <div id="empGrid"></div>
+  </div>`;
+  drawHomeGrid();
+}
+function drawHomeGrid() {
+  const q = H.q.toLowerCase();
+  const list = H.emps.filter(e => (H.team === 'all' || e.team === H.team) &&
+    `${e.first_name} ${e.last_name} ${e.nickname || ''} ${e.employee_code} ${e.position}`.toLowerCase().includes(q));
+  $('#empGrid').innerHTML = !list.length
+    ? `<div class="panel p-10 text-center text-muted">ยังไม่มีพนักงาน — <a href="#/mock" class="text-brand underline">สร้าง Mock data</a> หรือ <a href="#/emp/new" class="text-brand underline">เพิ่มพนักงาน</a></div>`
+    : `<div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">${list.map(e => {
+        const s = H.stats[e.id] || { avg: 0, gap: 0, cert: 0 };
+        return `<a href="#/emp/${e.id}" class="card group block p-4 transition hover:border-brand/50">
+          <div class="flex items-center gap-3">${avatar(e.photo_url, e.first_name, 52)}
+            <div class="min-w-0"><p class="truncate font-medium group-hover:text-brand">${esc(e.first_name)} ${esc(e.last_name)} ${e.nickname ? `<span class="text-muted">(${esc(e.nickname)})</span>` : ''}</p>
+              <p class="truncate text-xs text-muted">${esc(e.position)}</p><p class="truncate text-xs text-sky-300">${esc(e.team || '')}</p></div></div>
+          <div class="mt-4"><div class="mb-1 flex justify-between text-xs text-muted"><span>ระดับเฉลี่ย</span><span class="text-white">${s.avg.toFixed(1)} / 5</span></div>
+            <div class="h-1.5 rounded-full bg-zinc-700"><div class="h-full rounded-full bg-skill" style="width:${(s.avg / 5) * 100}%"></div></div>
+            <div class="mt-3 flex gap-2 text-[11px]"><span class="chip">Gap ${s.gap}</span><span class="chip-green">Cert ${s.cert}</span><span class="ml-auto text-muted">${esc(e.employee_code)}</span></div></div>
+        </a>`; }).join('')}</div>`;
+  icons();
+}
+
+/* ================= หน้า: Dashboard รายบุคคล ================= */
+const E = { rTab: 'hard', eTab: 'all' };
+let radarChart = null;
+
+async function viewEmployee(id) {
+  app.innerHTML = loading();
+  const [emps, skills, es, tasks, acts] = await Promise.all([
+    DB.all('employees'), getSkills(), DB.all('employee_skills', { employee_id: id }),
+    DB.all('tasks', { employee_id: id }), DB.all('activities', { employee_id: id })
+  ]);
+  const emp = emps.find(e => e.id === id);
+  if (!emp) { app.innerHTML = `<div class="p-8 text-muted">ไม่พบพนักงาน <a href="#/" class="text-brand underline">กลับหน้าหลัก</a></div>`; return; }
+  const m = new Map(es.map(x => [x.skill_id, x]));
+  Object.assign(E, {
+    id, emp, tasks: sortDesc(tasks), acts: sortDesc(acts),
+    rows: skills.map(s => { const x = m.get(s.id); return { skill_id: s.id, name: s.name, short_name: s.short_name, category: s.category, current_level: x?.current_level ?? 0, target_level: x?.target_level ?? 0, certified: !!x?.certified }; })
+  });
+  if (radarChart) { radarChart.destroy(); radarChart = null; }
+  const opts = emps.sort((a, b) => a.first_name.localeCompare(b.first_name, 'th'))
+    .map(a => `<option value="${a.id}" ${a.id === id ? 'selected' : ''}>${esc(a.first_name)} ${esc(a.last_name)}${a.nickname ? ` (${esc(a.nickname)})` : ''}</option>`).join('');
+
+  app.innerHTML = `
+  <div class="mx-auto max-w-[1600px] p-4 md:p-6">
+    <header class="mb-5 flex flex-wrap items-center justify-between gap-3">
+      <div><p class="text-xs text-muted">Solar Technician Skill Matrix</p><h1 class="text-2xl font-semibold md:text-3xl">Dashboard</h1></div>
+      <select class="input w-full sm:w-80" onchange="location.hash='#/emp/'+this.value">${opts}</select>
+    </header>
+    <div class="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_340px]">
+      <div id="pf" class="space-y-4"></div>
+      <div class="min-w-0 space-y-4">
+        <div id="cp"></div>
+        <section class="panel p-5">
+          <div class="mb-2 flex flex-wrap items-center justify-between gap-3"><h2 class="text-xl font-medium">ทักษะของฉัน</h2><div id="rTabs" class="flex gap-2 overflow-x-auto"></div></div>
+          <div class="relative h-[340px] sm:h-[420px]"><canvas id="radar"></canvas>
+            <p id="rMsg" style="display:none" class="absolute inset-0 place-items-center text-sm text-muted">ต้องมีอย่างน้อย 3 ทักษะในหมวดนี้เพื่อแสดงกราฟ</p></div>
+        </section>
+        <div id="ed"></div>
+      </div>
+      <div class="grid content-start gap-4 md:grid-cols-2 lg:col-span-2 xl:col-span-1 xl:grid-cols-1">
+        <div id="tk"></div><div id="ac"></div>
+      </div>
+    </div>
+  </div>`;
+  renderProfile(); renderCareer(); drawRadar(); renderEditor(); renderTasks(); renderActs();
+}
+
+function renderProfile() {
+  const e = E.emp, R = E.rows;
+  const skilled = R.filter(r => r.current_level >= 3), expert = R.filter(r => r.current_level >= 4);
+  const met = R.filter(r => r.target_level > 0 && r.current_level >= r.target_level).length;
+  const gap = R.filter(r => r.current_level < r.target_level).length, tot = met + gap || 1;
+  const cert = R.filter(r => r.certified).length;
+  const chips = (a, c) => (a.length ? a.map(r => `<span class="${c}">${esc(r.short_name)}</span>`).join('') : '<span class="text-muted">-</span>');
+  const info = (ic, t) => (t ? `<span class="flex items-center gap-2 break-all"><i data-lucide="${ic}" class="h-3.5 w-3.5 shrink-0 text-muted"></i>${esc(t)}</span>` : '');
+  $('#pf').innerHTML = `
+  <section class="panel p-5">
+    <div class="flex items-start gap-4">${avatar(e.photo_url, e.first_name, 68)}
+      <div class="min-w-0 flex-1"><h2 class="text-xl font-semibold leading-tight">${esc(e.first_name)} ${esc(e.last_name)}</h2>
+        ${e.nickname ? `<p class="text-sm text-muted">(${esc(e.nickname)})</p>` : ''}<p class="mt-1 text-sm text-brand">${esc(e.position)}</p></div>
+      <a href="#/emp/${e.id}/edit" title="แก้ไข" class="rounded-lg p-2 text-muted hover:bg-white/5 hover:text-white"><i data-lucide="pencil" class="h-4 w-4"></i></a>
+    </div>
+    <dl class="mt-5 space-y-3 text-sm">
+      <div><dt class="label">หัวหน้าทีม</dt><dd>${esc(e.team_lead || '-')}</dd></div>
+      <div><dt class="label">ทีม</dt><dd>${esc(e.team || '-')}</dd></div>
+      <div class="grid gap-1.5 text-xs text-gray-300">${info('id-card', e.employee_code)}${info('phone', e.phone)}${info('mail', e.email)}${e.start_date ? info('calendar-days', 'เริ่มงาน ' + thDate(e.start_date)) : ''}</div>
+      <div><dt class="label">ทำได้ด้วยตนเอง (L3+)</dt><dd class="flex flex-wrap gap-1.5">${chips(skilled, 'chip')}</dd></div>
+      <div><dt class="label">เชี่ยวชาญ (L4+)</dt><dd class="flex flex-wrap gap-1.5">${chips(expert, 'chip-green')}</dd></div>
+    </dl>
+  </section>
+  <section class="panel p-5">
+    <h3 class="mb-3 text-lg font-medium">สถานะเป้าหมายทักษะ</h3>
+    <div class="flex h-3 gap-1 overflow-hidden rounded-full">
+      <div class="rounded-full bg-skill" style="width:${(met / tot) * 100}%"></div><div class="rounded-full bg-sky-400" style="width:${(gap / tot) * 100}%"></div></div>
+    <div class="mt-3 flex flex-wrap gap-4 text-xs">
+      <span class="flex items-center gap-1.5"><i class="inline-block h-3 w-3 rounded bg-skill"></i>ถึงเป้า ${met}</span>
+      <span class="flex items-center gap-1.5"><i class="inline-block h-3 w-3 rounded bg-sky-400"></i>ต้องพัฒนา ${gap}</span>
+      <span class="text-muted">ใบรับรอง ${cert}</span></div>
+  </section>`;
+  icons();
+}
+
+function renderCareer() {
+  const pos = E.emp.position, next = nextPos(pos);
+  const tgt = E.rows.reduce((s, r) => s + r.target_level, 0);
+  const cur = E.rows.reduce((s, r) => s + Math.min(r.current_level, r.target_level), 0);
+  const pct = tgt ? cur / tgt : 0, SEG = 8;
+  $('#cp').innerHTML = `
+  <section class="panel p-5">
+    <div class="mb-4 flex items-center justify-between"><h2 class="text-lg font-medium">เส้นทางอาชีพ</h2>
+      <span class="rounded-lg border border-sky-400/40 px-3 py-1 text-xs text-sky-300">${Math.round(pct * 100)}% ของเป้าหมาย</span></div>
+    <div class="flex justify-between text-xs text-muted"><span>ปัจจุบัน</span><span>เป้าหมาย</span></div>
+    <div class="mb-3 flex justify-between gap-4 text-sm font-medium"><span>${esc(pos)}</span><span class="text-right">${esc(next)}</span></div>
+    <div class="flex gap-1.5">${Array.from({ length: SEG }, (_, i) => `<div class="h-2 flex-1 overflow-hidden rounded-full bg-zinc-700"><div class="h-full bg-skill transition-all" style="width:${Math.min(1, Math.max(0, pct * SEG - i)) * 100}%"></div></div>`).join('')}</div>
+  </section>`;
+}
+
+const RTABS = [['hard', CAT.hard], ['safety', CAT.safety], ['soft', CAT.soft], ['all', 'ทั้งหมด']];
+function drawRadar() {
+  $('#rTabs').innerHTML = RTABS.map(([k, l]) => `<button onclick="E.rTab='${k}';drawRadar()" class="tab ${E.rTab === k ? 'tab-active' : ''}">${l}</button>`).join('');
+  const d = E.rows.filter(r => E.rTab === 'all' || r.category === E.rTab);
+  const cv = $('#radar'), msg = $('#rMsg');
+  if (d.length < 3) { msg.style.display = 'grid'; cv.style.display = 'none'; return; }
+  msg.style.display = 'none'; cv.style.display = 'block';
+  const labels = d.map(r => r.short_name), cur = d.map(r => r.current_level), tgt = d.map(r => r.target_level);
+  if (radarChart && radarChart.canvas === cv) {
+    radarChart.data.labels = labels; radarChart.data.datasets[0].data = cur; radarChart.data.datasets[1].data = tgt;
+    radarChart.update(); return;
+  }
+  if (radarChart) radarChart.destroy();
+  radarChart = new Chart(cv, {
+    type: 'radar',
+    data: { labels, datasets: [
+      { label: 'ปัจจุบัน', data: cur, backgroundColor: 'rgba(134,239,172,.85)', borderColor: '#86efac', pointBackgroundColor: '#86efac', pointRadius: 2, borderWidth: 1 },
+      { label: 'เป้าหมาย', data: tgt, backgroundColor: 'rgba(63,107,74,.75)', borderColor: '#4d7c5a', pointRadius: 0, borderWidth: 1 }
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: { r: { min: 0, max: 5,
+        ticks: { stepSize: 1, color: '#6b7280', backdropColor: 'transparent', font: { size: 10 } },
+        grid: { color: '#3a3c43' }, angleLines: { color: '#3a3c43' },
+        pointLabels: { color: '#d1d5db', font: { size: 11, family: 'Prompt' } } } },
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#d1d5db', font: { family: 'Prompt', size: 12 }, boxWidth: 14 } },
+        tooltip: { backgroundColor: '#26272d', borderColor: '#2f3138', borderWidth: 1, titleFont: { family: 'Prompt' }, bodyFont: { family: 'Prompt' } }
+      }
+    }
+  });
+}
+
+function lvPicker(r, field, tone) {
+  const val = r[field];
+  return `<div class="flex items-center gap-2"><span class="w-14 text-[11px] text-muted">${tone === 'cur' ? 'ปัจจุบัน' : 'เป้าหมาย'}</span><div class="flex gap-1">
+    ${[1, 2, 3, 4, 5].map(v => `<button type="button" title="${LEVELS[v].label}" onclick="setLv('${r.skill_id}','${field}',${v})"
+      class="h-7 w-7 rounded-md text-[11px] font-medium transition sm:h-6 sm:w-6 ${v <= val ? (tone === 'cur' ? 'bg-skill text-black' : 'bg-target text-green-100') : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700'}">${v}</button>`).join('')}
+  </div></div>`;
+}
+function renderEditor() {
+  const list = E.rows.filter(r => E.eTab === 'all' || r.category === E.eTab);
+  $('#ed').innerHTML = `
+  <section class="panel p-5">
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-3"><h2 class="text-lg font-medium">ประเมินทักษะ</h2>
+      <a href="#/skills" class="btn btn-ghost !py-1.5 text-xs"><i data-lucide="settings-2" class="h-3.5 w-3.5"></i>จัดการรายการทักษะ</a></div>
+    <div class="mb-2 flex gap-3 overflow-x-auto">${[['all', 'ทั้งหมด'], ['hard', CAT.hard], ['safety', CAT.safety], ['soft', CAT.soft]].map(([k, l]) => `<button onclick="E.eTab='${k}';renderEditor()" class="tab ${E.eTab === k ? 'tab-active' : ''}">${l}</button>`).join('')}</div>
+    <div class="divide-y divide-line">
+      ${list.length ? list.map(r => `
+      <div class="grid gap-2 py-3 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-center md:gap-4">
+        <div class="min-w-0"><p class="truncate text-sm">${esc(r.name)}</p>
+          <p class="text-xs text-muted">${esc(r.short_name)} · ${CAT[r.category]}${r.current_level < r.target_level ? `<span class="ml-2 text-sky-300">gap ${r.target_level - r.current_level}</span>` : ''}</p></div>
+        ${lvPicker(r, 'current_level', 'cur')}${lvPicker(r, 'target_level', 'tgt')}
+        <label class="flex items-center gap-2 text-xs text-muted"><input type="checkbox" class="h-4 w-4 accent-green-400" ${r.certified ? 'checked' : ''} onchange="saveSkill('${r.skill_id}',{certified:this.checked})">ใบรับรอง</label>
+      </div>`).join('') : '<p class="py-6 text-center text-sm text-muted">ยังไม่มีทักษะในหมวดนี้</p>'}
+    </div>
+    <div class="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-line pt-3 text-[11px] text-muted">${LEVELS.slice(1).map(l => `<span><b class="text-gray-300">${l.code}</b> ${l.label}</span>`).join('')}</div>
+  </section>`;
+  icons();
+}
+
+function setLv(sid, field, v) {
+  const r = E.rows.find(x => x.skill_id === sid);
+  saveSkill(sid, { [field]: r[field] === v ? v - 1 : v });
+}
+const saveSkill = safe(async (sid, patch) => {
+  const r = E.rows.find(x => x.skill_id === sid);
+  const old = { ...r };
+  Object.assign(r, patch);
+  renderProfile(); renderCareer(); drawRadar(); renderEditor();
+  await DB.upsertES([{ employee_id: E.id, skill_id: sid, current_level: r.current_level, target_level: r.target_level, certified: r.certified, updated_at: new Date().toISOString() }]);
+  if ('certified' in patch) await logAct(E.id, `${r.certified ? 'เพิ่ม' : 'ยกเลิก'}ใบรับรอง "${r.name}"`);
+  else await logAct(E.id, `ปรับทักษะ "${r.name}" จาก L${old.current_level} เป็น L${r.current_level} (เป้าหมาย L${r.target_level})`);
+  await reloadActs();
+});
+
+function renderTasks() {
+  $('#tk').innerHTML = `
+  <section class="panel p-5">
+    <h2 class="mb-3 inline-block border-b-2 border-sky-400 pb-1 text-lg font-medium">งานที่ได้รับมอบหมาย</h2>
+    <div class="mb-3 flex gap-2"><input id="taskIn" class="input" placeholder="เพิ่มงานใหม่..." onkeydown="if(event.key==='Enter')addTask()">
+      <button onclick="addTask()" class="btn btn-primary !px-3"><i data-lucide="plus" class="h-4 w-4"></i></button></div>
+    <div class="max-h-[420px] space-y-3 overflow-y-auto pr-1">
+      ${E.tasks.length ? E.tasks.map(t => { const S = STATUS[t.status] || STATUS.todo; return `
+      <div class="card p-4">
+        <div class="flex items-start justify-between gap-2"><p class="font-medium leading-snug">${esc(t.title)}</p>
+          <div class="flex shrink-0 items-center gap-2">
+            <button onclick="cycleTask('${t.id}')" title="คลิกเพื่อเปลี่ยนสถานะ" class="flex items-center gap-1.5 text-xs ${S.text}">${S.label}<i class="inline-block h-2 w-2 rounded-full ${S.dot}"></i></button>
+            <button onclick="deleteTask('${t.id}')" title="ลบงาน" class="text-zinc-500 hover:text-red-400"><i data-lucide="x" class="h-3.5 w-3.5"></i></button></div></div>
+        ${t.description ? `<p class="mt-1 text-sm text-gray-300">${esc(t.description)}</p>` : ''}
+        ${(t.tags || []).length ? `<div class="mt-3 flex flex-wrap gap-1.5">${t.tags.map(g => `<span class="chip-green">${esc(g)}</span>`).join('')}</div>` : ''}
+      </div>`; }).join('') : '<p class="text-sm text-muted">ยังไม่มีงาน</p>'}
+    </div>
+  </section>`;
+  icons();
+}
+const reloadTasks = async () => { E.tasks = sortDesc(await DB.all('tasks', { employee_id: E.id })); renderTasks(); };
+const reloadActs = async () => { E.acts = sortDesc(await DB.all('activities', { employee_id: E.id })); renderActs(); };
+const addTask = safe(async () => {
+  const t = $('#taskIn').value.trim(); if (!t) return;
+  await DB.insert('tasks', { employee_id: E.id, title: t, description: null, status: 'todo', tags: [], due_date: today() });
+  await logAct(E.id, `เพิ่มงาน "${t}"`);
+  await reloadTasks(); await reloadActs();
+});
+const cycleTask = safe(async id => {
+  const t = E.tasks.find(x => x.id === id);
+  const next = ST_ORDER[(ST_ORDER.indexOf(t.status) + 1) % ST_ORDER.length];
+  await DB.update('tasks', { id }, { status: next });
+  await logAct(E.id, `เปลี่ยนสถานะงาน "${t.title}" เป็น ${STATUS[next].label}`);
+  await reloadTasks(); await reloadActs();
+});
+const deleteTask = safe(async id => {
+  if (!confirm('ลบงานนี้?')) return;
+  await DB.del('tasks', { id }); await reloadTasks();
+});
+
+function renderActs() {
+  $('#ac').innerHTML = `
+  <section class="panel p-5">
+    <h2 class="mb-3 text-lg font-medium">กิจกรรมล่าสุด</h2>
+    <div class="space-y-3">${E.acts.length ? E.acts.slice(0, 6).map(a => `
+      <div class="card flex gap-3 p-3">
+        <div class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 text-muted"><i data-lucide="history" class="h-4 w-4"></i></div>
+        <div class="min-w-0 flex-1"><p class="text-sm"><b>${esc(a.actor || 'Admin')}</b> ${esc(a.action)}</p>
+          <p class="mt-1 text-right text-[11px] text-muted">${a.created_at ? thDT(a.created_at) : ''}</p></div>
+      </div>`).join('') : '<p class="text-sm text-muted">ยังไม่มีกิจกรรม</p>'}</div>
+  </section>`;
+  icons();
+}
+
+/* ================= หน้า: เพิ่ม/แก้ไขพนักงาน ================= */
+const F = { id: null, photo: null };
+async function viewForm(id) {
+  let emp = null;
+  if (id) { emp = (await DB.all('employees', { id }))[0]; if (!emp) { app.innerHTML = `<div class="p-8 text-muted">ไม่พบพนักงาน</div>`; return; } }
+  F.id = id || null; F.photo = emp?.photo_url || null;
+  const v = k => esc(emp?.[k] ?? (k === 'position' ? CAREER[1] : ''));
+  const fld = (k, l, attrs = '') => `<div><label class="label">${l}</label><input name="${k}" class="input" value="${v(k)}" ${attrs}></div>`;
+  app.innerHTML = `
+  <div class="mx-auto max-w-4xl p-4 md:p-6">
+    <h1 class="mb-5 text-2xl font-semibold">${id ? 'แก้ไขข้อมูลพนักงาน' : 'เพิ่มพนักงาน'}</h1>
+    <form onsubmit="submitEmp(event)" class="panel grid gap-6 p-5 md:grid-cols-[200px_1fr] md:p-6">
+      <div class="flex flex-col items-center gap-3">
+        <div id="pv">${avatar(F.photo, emp?.first_name, 140)}</div>
+        <label class="btn btn-ghost cursor-pointer text-xs"><i data-lucide="camera" class="h-4 w-4"></i>อัปโหลดรูป
+          <input type="file" accept="image/*" hidden onchange="pickPhoto(this)"></label>
+        <button type="button" onclick="clearPhoto()" class="text-xs text-muted underline">ลบรูป</button>
+      </div>
+      <div class="grid gap-4 sm:grid-cols-2">
+        ${fld('employee_code', 'รหัสพนักงาน *', 'required placeholder="SLR-0001"')}
+        ${fld('nickname', 'ชื่อเล่น')}
+        ${fld('first_name', 'ชื่อ *', 'required')}
+        ${fld('last_name', 'นามสกุล *', 'required')}
+        <div><label class="label">ตำแหน่ง *</label><input name="position" class="input" list="positions" value="${v('position')}" required>
+          <datalist id="positions">${CAREER.map(p => `<option value="${p}">`).join('')}</datalist></div>
+        ${fld('team', 'ทีม', 'placeholder="ทีมติดตั้ง Rooftop"')}
+        ${fld('team_lead', 'หัวหน้าทีม')}
+        ${fld('start_date', 'วันเริ่มงาน', 'type="date"')}
+        ${fld('phone', 'เบอร์โทร', 'type="tel"')}
+        ${fld('email', 'อีเมล', 'type="email"')}
+        <div class="flex flex-wrap gap-2 sm:col-span-2">
+          <button id="saveBtn" class="btn btn-primary"><i data-lucide="save" class="h-4 w-4"></i>บันทึก</button>
+          <button type="button" onclick="history.back()" class="btn btn-ghost">ยกเลิก</button>
+          ${id ? `<button type="button" onclick="deleteEmp()" class="btn btn-danger ml-auto"><i data-lucide="trash-2" class="h-4 w-4"></i>ลบพนักงาน</button>` : ''}
+        </div>
+      </div>
+    </form>
+  </div>`;
+}
+
+function resizeImage(file, max = 320) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      res(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => rej(new Error('อ่านไฟล์รูปไม่ได้'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+const pickPhoto = safe(async input => {
+  const f = input.files?.[0]; if (!f) return;
+  F.photo = await resizeImage(f);
+  $('#pv').innerHTML = avatar(F.photo, '?', 140);
+});
+function clearPhoto() { F.photo = null; $('#pv').innerHTML = avatar(null, '?', 140); }
+
+const submitEmp = safe(async ev => {
+  ev.preventDefault();
+  const btn = $('#saveBtn'); btn.disabled = true;
+  try {
+    const fd = Object.fromEntries([...new FormData(ev.target)].map(([k, v]) => [k, String(v).trim()]));
+    const dup = (await DB.all('employees', { employee_code: fd.employee_code })).find(e => e.id !== F.id);
+    if (dup) throw new Error('รหัสพนักงานนี้มีอยู่แล้ว');
+    const payload = { ...fd, photo_url: F.photo };
+    ['nickname', 'team', 'team_lead', 'phone', 'email', 'start_date'].forEach(k => { if (!payload[k]) payload[k] = null; });
+    if (F.id) {
+      await DB.update('employees', { id: F.id }, payload);
+      await logAct(F.id, 'แก้ไขข้อมูลพนักงาน');
+      toast('บันทึกเรียบร้อย'); location.hash = `#/emp/${F.id}`;
+    } else {
+      const [emp] = await DB.insert('employees', { ...payload, is_mock: false });
+      const skills = await getSkills();
+      await DB.insert('employee_skills', skills.map(s => ({ employee_id: emp.id, skill_id: s.id, current_level: 0, target_level: 3, certified: false })));
+      await logAct(emp.id, `เพิ่มพนักงานใหม่ ${emp.first_name} ${emp.last_name}`);
+      toast('เพิ่มพนักงานเรียบร้อย'); location.hash = `#/emp/${emp.id}`;
+    }
+  } finally { btn.disabled = false; }
+});
+const deleteEmp = safe(async () => {
+  if (!confirm('ยืนยันการลบพนักงานคนนี้? ข้อมูลทักษะ งาน และกิจกรรมจะถูกลบด้วย')) return;
+  await deleteEmployees([F.id]); toast('ลบเรียบร้อย'); location.hash = '#/';
+});
+
+/* ================= หน้า: จัดการรายการทักษะ ================= */
+const SK = { editing: null, list: [] };
+async function viewSkills() {
+  app.innerHTML = loading();
+  SK.list = await getSkills(false); SK.editing = null;
+  app.innerHTML = `
+  <div class="mx-auto max-w-5xl p-4 md:p-6">
+    <div class="mb-5 flex flex-wrap items-center justify-between gap-3"><h1 class="text-2xl font-semibold">จัดการรายการทักษะ</h1>
+      <button onclick="restoreSkills()" class="btn btn-ghost text-xs"><i data-lucide="rotate-ccw" class="h-3.5 w-3.5"></i>เพิ่มทักษะมาตรฐานโซล่าเซลล์</button></div>
+    <form id="skForm" onsubmit="submitSkill(event)" class="panel mb-6 grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="sm:col-span-2"><label class="label">ชื่อทักษะ *</label><input name="name" class="input" required placeholder="เช่น การติดตั้ง Optimizer"></div>
+      <div><label class="label">ชื่อย่อ (แสดงบนกราฟ) *</label><input name="short_name" class="input" required maxlength="20"></div>
+      <div><label class="label">หมวดหมู่</label><select name="category" class="input">${Object.entries(CAT).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+      <div class="sm:col-span-2 lg:col-span-3"><label class="label">คำอธิบาย / เกณฑ์การประเมิน</label><input name="description" class="input"></div>
+      <div class="flex items-end gap-2"><button id="skBtn" class="btn btn-primary flex-1"><i data-lucide="plus" class="h-4 w-4"></i>เพิ่ม</button>
+        <button type="button" id="skCancel" onclick="cancelEditSkill()" class="btn btn-ghost" style="display:none">ยกเลิก</button></div>
+    </form>
+    <div id="skList"></div>
+  </div>`;
+  drawSkillList();
+}
+function drawSkillList() {
+  $('#skList').innerHTML = ['hard', 'safety', 'soft'].map(cat => `
+    <section class="mb-6"><h2 class="mb-2 text-sm font-medium text-brand">${CAT[cat]}</h2><div class="space-y-2">
+      ${SK.list.filter(s => s.category === cat).map(s => `
+      <div class="card flex items-center gap-3 p-3 ${s.is_active === false ? 'opacity-50' : ''}">
+        <div class="min-w-0 flex-1"><p class="truncate text-sm">${esc(s.name)} <span class="chip ml-1">${esc(s.short_name)}</span></p>
+          ${s.description ? `<p class="truncate text-xs text-muted">${esc(s.description)}</p>` : ''}</div>
+        <button title="แก้ไข" class="p-2 text-muted hover:text-white" onclick="editSkill('${s.id}')"><i data-lucide="pencil" class="h-4 w-4"></i></button>
+        <button title="${s.is_active === false ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}" class="p-2 text-muted hover:text-white" onclick="toggleSkill('${s.id}')"><i data-lucide="${s.is_active === false ? 'eye-off' : 'eye'}" class="h-4 w-4"></i></button>
+        <button title="ลบ" class="p-2 text-red-400/70 hover:text-red-400" onclick="removeSkill('${s.id}')"><i data-lucide="trash-2" class="h-4 w-4"></i></button>
+      </div>`).join('') || '<p class="text-xs text-muted">ไม่มีรายการ</p>'}
+    </div></section>`).join('');
+  icons();
+}
+function editSkill(id) {
+  const s = SK.list.find(x => x.id === id), f = $('#skForm');
+  SK.editing = id;
+  ['name', 'short_name', 'category', 'description'].forEach(k => (f.elements[k].value = s[k] ?? ''));
+  $('#skBtn').innerHTML = '<i data-lucide="save" class="h-4 w-4"></i>บันทึก'; $('#skCancel').style.display = '';
+  icons(); window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function cancelEditSkill() {
+  SK.editing = null; $('#skForm').reset();
+  $('#skBtn').innerHTML = '<i data-lucide="plus" class="h-4 w-4"></i>เพิ่ม'; $('#skCancel').style.display = 'none'; icons();
+}
+const submitSkill = safe(async ev => {
+  ev.preventDefault();
+  const fd = Object.fromEntries([...new FormData(ev.target)].map(([k, v]) => [k, String(v).trim()]));
+  fd.description = fd.description || null;
+  if (SK.list.some(s => s.name === fd.name && s.id !== SK.editing)) throw new Error('มีชื่อทักษะนี้อยู่แล้ว');
+  if (SK.editing) await DB.update('skills', { id: SK.editing }, fd);
+  else await DB.insert('skills', { ...fd, is_active: true, sort_order: Math.max(0, ...SK.list.map(s => s.sort_order || 0)) + 1 });
+  toast('บันทึกเรียบร้อย');
+  SK.list = await getSkills(false); cancelEditSkill(); drawSkillList();
+});
+const toggleSkill = safe(async id => {
+  const s = SK.list.find(x => x.id === id);
+  await DB.update('skills', { id }, { is_active: s.is_active === false });
+  SK.list = await getSkills(false); drawSkillList();
+});
+const removeSkill = safe(async id => {
+  const s = SK.list.find(x => x.id === id);
+  if (!confirm(`ลบทักษะ "${s.name}"? ข้อมูลระดับทักษะนี้ของพนักงานทุกคนจะถูกลบด้วย`)) return;
+  await DB.del('employee_skills', { skill_id: id }); await DB.del('skills', { id });
+  SK.list = await getSkills(false); drawSkillList();
+});
+const restoreSkills = safe(async () => {
+  const n = await restoreDefaultSkills(); toast(`มีทักษะพร้อมใช้ ${n} รายการ`);
+  SK.list = await getSkills(false); drawSkillList();
+});
+
+/* ================= หน้า: Skill Matrix ================= */
+const M = { cat: 'all' };
+async function viewMatrix() {
+  app.innerHTML = loading();
+  const [emps, skills, es] = await Promise.all([DB.all('employees'), getSkills(), DB.all('employee_skills')]);
+  M.emps = emps.sort((a, b) => a.first_name.localeCompare(b.first_name, 'th'));
+  M.skills = skills; M.map = {};
+  es.forEach(r => (M.map[r.employee_id + ':' + r.skill_id] = r));
+  drawMatrix();
+}
+function drawMatrix() {
+  const cols = M.skills.filter(s => M.cat === 'all' || s.category === M.cat);
+  const lv = (e, s) => M.map[e + ':' + s];
+  const colAvg = sid => (M.emps.length ? M.emps.reduce((a, e) => a + (lv(e.id, sid)?.current_level ?? 0), 0) / M.emps.length : 0);
+  app.innerHTML = `
+  <div class="mx-auto max-w-[1800px] p-4 md:p-6">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3"><h1 class="text-2xl font-semibold">Skill Matrix</h1>
+      <div class="flex gap-3 overflow-x-auto">${[['all', 'ทั้งหมด'], ['hard', CAT.hard], ['safety', CAT.safety], ['soft', CAT.soft]].map(([k, l]) => `<button onclick="M.cat='${k}';drawMatrix()" class="tab ${M.cat === k ? 'tab-active' : ''}">${l}</button>`).join('')}</div></div>
+    ${!M.emps.length ? `<div class="panel p-10 text-center text-muted">ยังไม่มีพนักงาน — <a href="#/mock" class="text-brand underline">สร้าง Mock data</a></div>` : `
+    <div class="panel overflow-x-auto">
+      <table class="w-full border-separate text-xs" style="border-spacing:4px">
+        <thead><tr>
+          <th class="sticky left-0 z-10 min-w-[170px] bg-panel p-2 text-left font-medium text-muted">พนักงาน</th>
+          ${cols.map(s => `<th title="${esc(s.name)}" class="h-32 min-w-[42px] align-bottom font-normal text-muted"><div class="mx-auto whitespace-nowrap" style="writing-mode:vertical-rl;transform:rotate(180deg)">${esc(s.short_name)}</div></th>`).join('')}
+          <th class="px-2 align-bottom font-medium text-muted">เฉลี่ย</th></tr></thead>
+        <tbody>${M.emps.map(e => {
+          const vals = cols.map(s => lv(e.id, s.id)?.current_level ?? 0);
+          const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+          return `<tr>
+            <td class="sticky left-0 z-10 bg-panel p-1.5"><a href="#/emp/${e.id}" class="flex items-center gap-2 hover:text-brand">${avatar(e.photo_url, e.first_name, 28)}<span class="truncate">${esc(e.first_name)} ${e.nickname ? `(${esc(e.nickname)})` : ''}</span></a></td>
+            ${cols.map(s => { const r = lv(e.id, s.id), c = r?.current_level ?? 0, t = r?.target_level ?? 0;
+              return `<td title="${esc(s.name)}: L${c} → เป้า L${t}${r?.certified ? ' (มีใบรับรอง)' : ''}" class="h-9 rounded-md text-center font-semibold ${LEVEL_CELL[c]} ${c < t ? 'ring-1 ring-inset ring-sky-400/60' : ''}">${c}${r?.certified ? '<sup class="text-green-300">✓</sup>' : ''}</td>`; }).join('')}
+            <td class="px-2 text-center font-semibold text-brand">${avg.toFixed(1)}</td></tr>`; }).join('')}
+        </tbody>
+        <tfoot><tr><td class="sticky left-0 bg-panel p-2 text-muted">ค่าเฉลี่ยทีม</td>${cols.map(s => `<td class="text-center text-muted">${colAvg(s.id).toFixed(1)}</td>`).join('')}<td></td></tr></tfoot>
+      </table>
+    </div>
+    <div class="mt-3 flex flex-wrap gap-3 text-[11px] text-muted">
+      ${LEVELS.map(l => `<span class="flex items-center gap-1.5"><i class="inline-block h-3 w-3 rounded ${LEVEL_CELL[l.v]}"></i>${l.v} ${l.label}</span>`).join('')}
+      <span class="flex items-center gap-1.5"><i class="inline-block h-3 w-3 rounded ring-1 ring-sky-400"></i>ยังไม่ถึงเป้าหมาย</span></div>`}
+  </div>`;
+  icons();
+}
+
+/* ================= หน้า: Mock Data ================= */
+function viewMock() {
+  app.innerHTML = `
+  <div class="mx-auto max-w-3xl p-4 md:p-6">
+    <h1 class="mb-1 text-2xl font-semibold">Mockup Data Generator</h1>
+    <p class="mb-2 text-sm text-muted">สร้างพนักงานจำลองพร้อมรูป ระดับทักษะ งาน และกิจกรรม (ข้อมูลจะถูกทำเครื่องหมาย is_mock)</p>
+    <div class="mb-6">${modeBadge()}</div>
+    <div class="panel space-y-5 p-5">
+      <div><label class="label">จำนวนพนักงานที่ต้องการสร้าง: <b id="mcN" class="text-white">8</b></label>
+        <input id="mc" type="range" min="1" max="50" value="8" oninput="$('#mcN').textContent=this.value" class="w-full accent-amber-400"></div>
+      <div class="flex flex-wrap gap-2">
+        <button class="btn btn-primary" onclick="mockRun('gen')"><i data-lucide="flask-conical" class="h-4 w-4"></i>สร้าง Mock Data</button>
+        <button class="btn btn-ghost" onclick="mockRun('skills')"><i data-lucide="list-checks" class="h-4 w-4"></i>สร้างทักษะมาตรฐาน</button>
+        <button class="btn btn-danger" onclick="mockRun('clear')"><i data-lucide="trash-2" class="h-4 w-4"></i>ลบ Mock ทั้งหมด</button>
+        ${USE_SB ? '' : `<button class="btn btn-danger" onclick="mockRun('reset')"><i data-lucide="rotate-ccw" class="h-4 w-4"></i>รีเซ็ตข้อมูลทั้งหมด</button>`}
+      </div>
+      <div id="mlog" class="h-56 overflow-y-auto rounded-lg bg-base p-3 font-mono text-xs text-gray-300"><span class="text-muted">Log จะแสดงที่นี่</span></div>
+    </div>
+  </div>`;
+}
+let mockBusy = false, mockLogged = false;
+async function mockRun(kind) {
+  if (mockBusy) return;
+  if (kind === 'clear' && !confirm('ลบข้อมูล mock ทั้งหมด?')) return;
+  if (kind === 'reset' && !confirm('ลบข้อมูลทั้งหมดในเบราว์เซอร์นี้ (รวมข้อมูลที่กรอกเอง)?')) return;
+  const btns = document.querySelectorAll('#app button');
+  const log = m => { const el = $('#mlog'); if (!mockLogged) { el.innerHTML = ''; mockLogged = true; } el.insertAdjacentHTML('afterbegin', `<div>${new Date().toLocaleTimeString('th-TH')}  ${esc(m)}</div>`); };
+  mockBusy = true; btns.forEach(b => (b.disabled = true));
+  try {
+    if (kind === 'gen') { log('กำลังสร้าง...'); log(`✅ สร้างพนักงาน mock ${await generateMockData(+$('#mc').value)} คน`); }
+    if (kind === 'skills') log(`✅ มีทักษะพร้อมใช้ ${await restoreDefaultSkills()} รายการ`);
+    if (kind === 'clear') log(`🗑️ ลบพนักงาน mock ${await clearMockData()} คน`);
+    if (kind === 'reset') { localStorage.removeItem(LS_KEY); await restoreDefaultSkills(); log('🗑️ รีเซ็ตข้อมูลทั้งหมดแล้ว (คืนค่าทักษะมาตรฐาน)'); }
+  } catch (e) { log('❌ ' + (e.message || e)); }
+  finally { mockBusy = false; btns.forEach(b => (b.disabled = false)); }
+}
+
+/* ================= Start ================= */
+Chart.defaults.font.family = 'Prompt';
+(async () => {
+  try {
+    if (!(await DB.all('skills')).length) await DB.insert('skills', DEFAULT_SKILLS.map(s => ({ ...s, is_active: true })));
+  } catch (e) {
+    renderNav('/');
+    app.innerHTML = `<div class="mx-auto max-w-2xl p-6"><div class="panel p-6">
+      <h2 class="mb-2 text-lg font-semibold text-red-300">เชื่อมต่อฐานข้อมูลไม่สำเร็จ</h2>
+      <p class="mb-3 text-sm text-muted">${esc(e.message || e)}</p>
+      <p class="text-sm">ตรวจสอบว่า: 1) ใส่ SUPABASE_URL / SUPABASE_ANON_KEY ถูกต้อง 2) รันสคริปต์ SQL ใน Supabase แล้ว</p></div></div>`;
+    icons(); return;
+  }
+  window.addEventListener('hashchange', router);
+  router();
+})();
+</script>
+</body>
+</html>
